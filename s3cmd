@@ -127,7 +127,7 @@ def cmd_ls(args):
 	if len(args) > 0:
 		uri = S3Uri(args[0])
 		if uri.type == "s3" and uri.has_bucket():
-			subcmd_bucket_list(s3, uri)
+			subcmd_bucket_list(s3, uri, cfg.select_dir)
 			return
 	subcmd_buckets_list_all(s3)
 
@@ -149,7 +149,7 @@ def subcmd_buckets_list_all(s3):
 			bucket["Name"],
 			))
 
-def subcmd_bucket_list(s3, uri):
+def subcmd_bucket_list(s3, uri, select_dir = False):
 	bucket = uri.bucket()
 	prefix = uri.object()
 
@@ -165,28 +165,39 @@ def subcmd_bucket_list(s3, uri):
 		else:
 			raise
 
-	if cfg.list_md5:
+	if select_dir:
+		format_string = u"%(uri)s"
+	elif cfg.list_md5:
 		format_string = u"%(timestamp)16s %(size)9s%(coeff)1s  %(md5)32s  %(uri)s"
 	else:
 		format_string = u"%(timestamp)16s %(size)9s%(coeff)1s  %(uri)s"
 
-	for prefix in response['common_prefixes']:
-		output(format_string % {
-			"timestamp": "",
-			"size": "DIR",
-			"coeff": "",
-			"md5": "",
-			"uri": uri.compose_uri(bucket, prefix["Prefix"])})
+	if select_dir:
+                for prefix in response['common_prefixes']:
+                        output(format_string % {
+                                "timestamp": "",
+                                "size": "DIR",
+                                "coeff": "",
+                                "md5": "",
+                                "uri": uri.compose_uri(bucket, prefix["Prefix"])})		
+	else:
+		for prefix in response['common_prefixes']:
+			output(format_string % {
+				"timestamp": "",
+				"size": "DIR",
+				"coeff": "",
+				"md5": "",
+				"uri": uri.compose_uri(bucket, prefix["Prefix"])})
 
-	for object in response["list"]:
-		size, size_coeff = formatSize(object["Size"], Config().human_readable_sizes)
-		output(format_string % {
-			"timestamp": formatDateTime(object["LastModified"]),
-			"size" : str(size), 
-			"coeff": size_coeff,
-			"md5" : object['ETag'].strip('"'),
-			"uri": uri.compose_uri(bucket, object["Key"]),
-			})
+		for object in response["list"]:
+			size, size_coeff = formatSize(object["Size"], Config().human_readable_sizes)
+			output(format_string % {
+				"timestamp": formatDateTime(object["LastModified"]),
+				"size" : str(size), 
+				"coeff": size_coeff,
+				"md5" : object['ETag'].strip('"'),
+				"uri": uri.compose_uri(bucket, object["Key"]),
+				})
 
 def cmd_bucket_create(args):
 	s3 = S3(Config())
@@ -910,7 +921,7 @@ def _filelist_filter_exclude_include(src_list):
 			debug(u"PASS: %s" % (file))
 	return src_list, exclude_list
 
-def _compare_filelists(src_list, dst_list, src_is_local_and_dst_is_remote):
+def _compare_filelists(src_list, dst_list, src_is_local_and_dst_is_remote, src_and_dst_remote = False):
 	info(u"Verifying attributes...")
 	cfg = Config()
 	exists_list = SortedDict(ignore_case = False)
@@ -939,7 +950,10 @@ def _compare_filelists(src_list, dst_list, src_is_local_and_dst_is_remote):
 			
 			if attribs_match and 'md5' in cfg.sync_checks:
 				## ... same size, check MD5
-				if src_is_local_and_dst_is_remote:
+				if src_and_dst_remote:
+					src_md5 = src_list[file]['md5']
+					dst_md5 = dst_list[file]['md5']
+				elif src_is_local_and_dst_is_remote:
 					src_md5 = Utils.hash_file_md5(src_list[file]['full_name'])
 					dst_md5 = dst_list[file]['md5']
 				else:
@@ -960,6 +974,82 @@ def _compare_filelists(src_list, dst_list, src_is_local_and_dst_is_remote):
 			del(dst_list[file])
 
 	return src_list, dst_list, exists_list
+
+def cmd_sync_remote2remote(args):
+	s3 = S3(Config())
+
+	destination_base = args[-1]
+	dest_list = fetch_remote_list(destination_base, recursive = True, require_attribs = True)
+	source_list = fetch_remote_list(args[:-1], recursive = True, require_attribs = True)
+
+	dest_count = len(dest_list)
+	source_count = len(source_list)
+
+	info(u"Found %d source files, %d destination files" % (dest_count, source_count))
+
+	source_list, exclude_list = _filelist_filter_exclude_include(source_list)
+
+	source_list, dest_list, existing_list = _compare_filelists(source_list, dest_list, False, True)
+
+        dest_count = len(dest_list)
+        source_count = len(source_list)
+
+        info(u"Summary: %d files to copy, %d files to delete" % (source_count, dest_count))
+
+	if cfg.recursive:
+		if not destination_base.endswith("/"):
+			destination_base += "/"
+		for key in source_list:
+			source_list[key]['dest_name'] = destination_base + key
+	else:
+		key = source_list.keys()[0]
+		if destination_base.endswith("/"):
+			source_list[key]['dest_name'] = destination_base + key
+		else:
+			source_list[key]['dest_name'] = destination_base
+
+        if cfg.parallel and len(source_list) > 1:
+                #Disabling progress metter for parallel downloads.
+                cfg.progress_meter = False
+                #Initialize Queue
+                global q
+                q = Queue.Queue()
+
+                seq = 0
+                for key in source_list:
+                        seq += 1
+                        item = source_list[key]
+                        src_uri = S3Uri(item['object_uri_str'])
+                        dst_uri = S3Uri(item['dest_name'])
+                        extra_headers = copy(cfg.extra_headers)
+                        q.put([src_uri,dst_uri,extra_headers,s3.object_copy,"File %(src)s copied to %(dst)s"])
+
+                for i in range(cfg.workers):
+                        t = threading.Thread(target=cp_mv_worker)
+                        t.daemon = True
+                        t.start()
+
+                #Necessary to ensure KeyboardInterrupt can actually kill
+                #Otherwise Queue.join() blocks until all queue elements have completed
+                while threading.activeCount() > 1:
+                        time.sleep(.1)
+
+                q.join()
+        else:
+                seq = 0
+                for key in source_list:
+                        seq += 1
+                        seq_label = "[%d of %d]" % (seq, remote_count)
+
+                        item = source_list[key]
+                        src_uri = S3Uri(item['object_uri_str'])
+                        dst_uri = S3Uri(item['dest_name'])
+
+                        extra_headers = copy(cfg.extra_headers)
+                        response = s3.object_copy(src_uri, dst_uri, extra_headers)
+                        output("File %(src)s copied to %(dst)s" % { "src" : src_uri, "dst" : dst_uri })
+                        if Config().acl_public:
+                                info(u"Public URL is: %s" % dst_uri.public_url())
 
 def cmd_sync_remote2local(args):
 	s3 = S3(Config())
@@ -1323,7 +1413,9 @@ def cmd_sync(args):
 		return cmd_sync_local2remote(args)
 	if S3Uri(args[0]).type == "s3" and S3Uri(args[-1]).type == "file":
 		return cmd_sync_remote2local(args)
-	raise ParameterError("Invalid source/destination: '%s'" % "' '".join(args))
+	if S3Uri(args[0]).type == "s3" and S3Uri(args[-1]).type == "s3":
+                return cmd_sync_remote2remote(args)
+        raise ParameterError("Invalid source/destination: '%s'" % "' '".join(args))
 
 def cmd_setacl(args):
 	def _update_acl(uri, seq_label = ""):
@@ -1872,6 +1964,8 @@ def main():
 	
 	optparser.add_option(      "--parallel", dest="parallel", action="store_true", help="Download and upload files in parallel.")
 	optparser.add_option(      "--workers", dest="workers", default=10, help="Sets the number of workers to run for uploading and downloading files (can only be used in conjunction with the --parallel argument)")
+
+	optparser.add_option(      "--directory", dest="select_dir", action="store_true", default=False, help="Select directories (only for [ls]).")
 
 	optparser.set_usage(optparser.usage + " COMMAND [parameters]")
 	optparser.set_description('S3cmd is a tool for managing objects in '+
