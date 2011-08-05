@@ -710,11 +710,13 @@ def subcmd_cp_mv(args, process_fce, action_str, message):
 		seq = 0
 		for key in remote_list:
 			seq += 1
+			seq_label = "[%d of %d]" % (seq, remote_count)
+
       			item = remote_list[key]
       			src_uri = S3Uri(item['object_uri_str'])
       			dst_uri = S3Uri(item['dest_name'])
       			extra_headers = copy(cfg.extra_headers)
-			q.put([src_uri,dst_uri,extra_headers,process_fce,message])
+			q.put([src_uri,dst_uri,extra_headers,process_fce,message,seq_label])
 
 		for i in range(cfg.workers):
 			t = threading.Thread(target=cp_mv_worker)
@@ -739,19 +741,19 @@ def subcmd_cp_mv(args, process_fce, action_str, message):
 
       			extra_headers = copy(cfg.extra_headers)
       			response = process_fce(src_uri, dst_uri, extra_headers)
-      			output(message % { "src" : src_uri, "dst" : dst_uri })
+      			output(message % { "src" : src_uri, "dst" : dst_uri, "seq_label" : seq_label})
       			if Config().acl_public:
       				info(u"Public URL is: %s" % dst_uri.public_url())
 
 def cp_mv_worker():
 	while True:
 		try:
-			(src_uri,dst_uri,extra_headers,process_fce,message) = q.get_nowait()
+			(src_uri,dst_uri,extra_headers,process_fce,message,seq_label) = q.get_nowait()
 		except Queue.Empty:
 			return
 		try:
       			response = process_fce(src_uri, dst_uri, extra_headers)
-      			output(message % { "src" : src_uri, "dst" : dst_uri })
+      			output(message % { "src" : src_uri, "dst" : dst_uri , "seq_label" : seq_label})
       			if Config().acl_public:
       				info(u"Public URL is: %s" % dst_uri.public_url())
 		except Exception, e:
@@ -761,11 +763,11 @@ def cp_mv_worker():
 
 def cmd_cp(args):
 	s3 = S3(Config())
-	subcmd_cp_mv(args, s3.object_copy, "copy", "File %(src)s copied to %(dst)s")
+	subcmd_cp_mv(args, s3.object_copy, "copy", "File %(src)s copied to %(dst)s %(seq_label)s")
 
 def cmd_mv(args):
 	s3 = S3(Config())
-	subcmd_cp_mv(args, s3.object_move, "move", "File %(src)s moved to %(dst)s")
+	subcmd_cp_mv(args, s3.object_move, "move", "File %(src)s moved to %(dst)s %(seq_label)s")
 
 def cmd_info(args):
 	s3 = S3(Config())
@@ -1018,11 +1020,13 @@ def cmd_sync_remote2remote(args):
                 seq = 0
                 for key in source_list:
                         seq += 1
+			seq_label = "[%d of %d]" % (seq, source_count)
+
                         item = source_list[key]
                         src_uri = S3Uri(item['object_uri_str'])
                         dst_uri = S3Uri(item['dest_name'])
                         extra_headers = copy(cfg.extra_headers)
-                        q.put([src_uri,dst_uri,extra_headers,s3.object_copy,"File %(src)s copied to %(dst)s"])
+                        q.put([src_uri,dst_uri,extra_headers,s3.object_copy,"File %(src)s copied to %(dst)s %(seq_label)s",seq_label])
 
                 for i in range(cfg.workers):
                         t = threading.Thread(target=cp_mv_worker)
