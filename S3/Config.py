@@ -78,6 +78,8 @@ class Config(object):
 	workers = 10
 	follow_symlinks=False
 	select_dir = False
+	max_retries = 5
+	retry_delay = 3
 
 	## Creating a singleton
 	def __new__(self, configfile = None):

@@ -1970,7 +1970,9 @@ def main():
 	optparser.add_option(      "--workers", dest="workers", default=10, help="Sets the number of workers to run for uploading and downloading files (can only be used in conjunction with the --parallel argument)")
 
 	optparser.add_option(      "--directory", dest="select_dir", action="store_true", default=False, help="Select directories (only for [ls]).")
-
+	optparser.add_option(      "--max-retries", dest="max_retries", type="int", action="store", default=5, help="Number of retry before failing GET or PUT.")
+	optparser.add_option(      "--retry-delay", dest="retry_delay", type="int", action="store", default=3, help="Time delay to wait after failing GET or PUT.")
+   
 	optparser.set_usage(optparser.usage + " COMMAND [parameters]")
 	optparser.set_description('S3cmd is a tool for managing objects in '+
 		'Amazon S3 storage. It allows for making and removing '+

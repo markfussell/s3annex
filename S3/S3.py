@@ -47,7 +47,7 @@ class S3Request(object):
 	def format_param_str(self):
 		"""
 		Format URL parameters from self.params and returns
-		?parm1=val1&parm2=val2 or an empty string if there 
+		?parm1=val1&parm2=val2 or an empty string if there
 		are no parameters.  Output of this function should 
 		be appended directly to self.resource['uri']
 		"""
@@ -118,9 +118,6 @@ class S3(object):
 
 	## S3 sometimes sends HTTP-307 response 
 	redir_map = {}
-
-	## Maximum attempts of re-issuing failed requests
-	_max_retries = 5
 
 	def __init__(self, config):
 		self.config = config
@@ -458,9 +455,11 @@ class S3(object):
 	
 	def _fail_wait(self, retries):
 		# Wait a few seconds. The more it fails the more we wait.
-		return (self._max_retries - retries + 1) * 3
+		return (self.config.max_retries - retries + 1) * self.config.retry_delay
 		
-	def send_request(self, request, body = None, retries = _max_retries):
+	def send_request(self, request, body = None, retries = -1):
+		if retries == -1:
+			retries = self.config.max_retries
 		method_string, resource, headers = request.get_triplet()
 		debug("Processing request, please wait...")
 		if not headers.has_key('content-length'):
@@ -509,7 +508,9 @@ class S3(object):
 
 		return response
 
-	def send_file(self, request, file, labels, throttle = 0, retries = _max_retries):
+	def send_file(self, request, file, labels, throttle = 0, retries = -1):
+		if retries == -1:
+			retries = self.config.max_retries
 		method_string, resource, headers = request.get_triplet()
 		size_left = size_total = headers.get("content-length")
 		if self.config.progress_meter:
@@ -562,7 +563,7 @@ class S3(object):
 			if self.config.progress_meter:
 				progress.done("failed")
 			if retries:
-				if retries < self._max_retries:
+				if retries < self.config.max_retries:
 					throttle = throttle and throttle * 5 or 0.01
 				warning("Upload failed: %s (%s)" % (resource['uri'], e))
 				warning("Retrying on lower speed (throttle=%0.2f)" % throttle)
@@ -634,7 +635,9 @@ class S3(object):
 
 		return response
 
-	def recv_file(self, request, stream, labels, start_position = 0, retries = _max_retries):
+	def recv_file(self, request, stream, labels, start_position = 0, retries = -1):
+		if retries == -1:
+			retries = self.config.max_retries
 		method_string, resource, headers = request.get_triplet()
 		if self.config.progress_meter:
 			progress = self.config.progress_class(labels, 0)
