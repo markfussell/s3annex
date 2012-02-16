@@ -22,6 +22,7 @@ import codecs
 import locale
 import subprocess
 import htmlentitydefs
+import hashlib
 
 import Queue
 import threading
@@ -151,9 +152,9 @@ def subcmd_buckets_list_all(s3):
     response = s3.list_all_buckets()
     for bucket in response["list"]:
         output(u"%s  s3://%s" % (
-        formatDateTime(bucket["CreationDate"]),
-        bucket["Name"],
-        ))
+            formatDateTime(bucket["CreationDate"]),
+            bucket["Name"],
+            ))
 
 
 def subcmd_bucket_list(s3, uri, select_dir=False):
@@ -251,7 +252,7 @@ def cmd_bucket_delete(args):
 def fetch_local_list(args, recursive=None):
     local_uris = []
     local_list = SortedDict(ignore_case=False)
-    single_file = False
+    is_single_file = False
 
     if type(args) not in (list, tuple):
         args = [args]
@@ -268,7 +269,7 @@ def fetch_local_list(args, recursive=None):
         local_uris.append(uri)
 
     for uri in local_uris:
-        list_for_uri, single_file = _get_filelist_local(uri)
+        list_for_uri, is_single_file = _get_filelist_local(uri)
         local_list.update(list_for_uri)
 
     ## Single file is True if and only if the user
@@ -277,9 +278,9 @@ def fetch_local_list(args, recursive=None):
     ## and that dir contained only one FILE. That's not
     ## a case of single_file==True.
     if len(local_list) > 1:
-        single_file = False
+        is_single_file = False
 
-    return local_list, single_file
+    return local_list, is_single_file
 
 
 def fetch_remote_list(args, require_attribs=False, recursive=None):
@@ -768,6 +769,12 @@ def subcmd_cp_mv(args, process_fce, action_str, message):
                 info(u"Public URL is: %s" % dst_uri.public_url())
 
 
+def do_cp_mv_work(item, seq, total):
+    src_uri = S3Uri(item['object_uri_str'])
+    dst_uri = S3Uri(item['dest_name'])
+    extra_headers = copy(cfg.extra_headers)
+
+
 def cp_mv_worker():
     while True:
         try:
@@ -775,6 +782,7 @@ def cp_mv_worker():
         except Queue.Empty:
             return
         try:
+        #            do_cp_mv_work(item, seq, total)
             response = process_fce(src_uri, dst_uri, extra_headers)
             output(message % {"src": src_uri, "dst": dst_uri, "seq_label": seq_label})
             if Config().acl_public:
@@ -831,7 +839,7 @@ def cmd_info(args):
 
 
 def _get_filelist_local(local_uri):
-    info(u"Compiling list of local files...")
+    info(u"Compiling list of local files for '%s', '%s', '%s'" % (local_uri, local_uri.basename(), local_uri.path()))
     if local_uri.isdir():
         local_base = deunicodise(local_uri.basename())
         local_path = deunicodise(local_uri.path())
@@ -843,9 +851,12 @@ def _get_filelist_local(local_uri):
         filelist = [( local_path, [], [deunicodise(local_uri.basename())] )]
         single_file = True
     loc_list = SortedDict(ignore_case=False)
+    #    info(u"Compiling list of local files for %s..." % (filelist))
     for root, dirs, files in filelist:
         rel_root = root.replace(local_path, local_base, 1)
         for f in files:
+            info(u"File %s (%s) -> '%s'" % (root, rel_root, f))
+            fileNamePrefix, fileExtension = os.path.splitext(f)
             full_name = os.path.join(root, f)
             if not os.path.isfile(full_name):
                 continue
@@ -862,10 +873,14 @@ def _get_filelist_local(local_uri):
                 relative_file = relative_file[2:]
             sr = os.stat_result(os.lstat(full_name))
             loc_list[relative_file] = {
+                'key': relative_file,
                 'full_name_unicode': unicodise(full_name),
                 'full_name': full_name,
                 'size': sr.st_size,
                 'mtime': sr.st_mtime,
+                'file_name': f,
+                'file_name_prefix': fileNamePrefix,
+                'file_name_extension': fileExtension,
                 ## TODO: Possibly more to save here...
             }
     return loc_list, single_file
@@ -1178,7 +1193,7 @@ def cmd_sync_remote2local(args):
             seq += 1
             do_remote2local_work(remote_list[file], seq, len(file_list))
 
-        #Omitted due to threading
+            #Omitted due to threading
 
 
 def sync_remote2local_worker():
@@ -1245,7 +1260,7 @@ def do_remote2local_work(item, seq, total):
                     mtime = attrs.has_key('mtime') and int(attrs['mtime']) or int(time.time())
                     atime = attrs.has_key('atime') and int(attrs['atime']) or int(time.time())
                     os.utime(dst_file, (atime, mtime))
-                ## FIXME: uid/gid / uname/gname handling comes here! TODO
+                    ## FIXME: uid/gid / uname/gname handling comes here! TODO
         except OSError, e:
             try: dst_stream.close()
             except: pass
@@ -1564,7 +1579,7 @@ def cmd_accesslog(args):
     output(u"   Logging Enabled: %s" % accesslog.isLoggingEnabled())
     if accesslog.isLoggingEnabled():
         output(u"     Target prefix: %s" % accesslog.targetPrefix().uri())
-    #output(u"   Public Access:   %s" % accesslog.isAclPublic())
+        #output(u"   Public Access:   %s" % accesslog.isAclPublic())
 
 
 def cmd_sign(args):
@@ -1870,39 +1885,379 @@ def process_patterns(patterns_list, patterns_from, is_glob, option_txt=""):
     return patterns_compiled, patterns_textual
 
 
+#==============================================================================================================================
+#=== cmd_foo
+#==============================================================================================================================
+
+def cmd_upload(args):
+    if (len(args) < 2):
+        raise ParameterError("Too few parameters! Expected: %s" % commands['foo']['param'])
+    if len(args) == 0:
+        raise ParameterError("Nothing to upload. Expecting a local file or directory and a S3 URI destination.")
+
+    ## Normalize URI to convert s3://bkt to s3://bkt/ (trailing slash)
+    destination_base_uri = S3Uri(args.pop())
+    if destination_base_uri.type != 's3':
+        raise ParameterError("Destination must be S3Uri. Got: %s" % destination_base_uri)
+    destination_base = str(destination_base_uri)
+
+    local_list, single_file_local = fetch_local_list(args)
+
+    local_list, exclude_list = _filelist_filter_exclude_include(local_list)
+
+    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+
+    local_count = len(local_list)
+    remote_count = len(remote_list)
+
+    info(u"Summary: %d local files to upload, %d remote files already present" % (local_count, remote_count))
+
+    work_info = {
+        'remote_list': remote_list
+    }
+
+
+
+
+    #    if local_count > 0:
+    #        if not destination_base.endswith("/"):
+    #            if not single_file_local:
+    #                raise ParameterError(
+    #                    "Destination S3 URI must end with '/' (ie must refer to a directory on the remote side).")
+    #        local_list[local_list.keys()[0]]['remote_uri'] = unicodise(destination_base)
+    #        else:
+    #        MLF:TODO:Want to flatten this
+    #        for key in local_list:
+    #            local_list[key]['remote_uri'] = unicodise(destination_base + key)
+
+    if local_count > 0:
+        if not destination_base.endswith("/"):
+            if not single_file_local:
+                raise ParameterError(
+                    "Destination S3 URI must end with '/' (ie must refer to a directory on the remote side).")
+            local_list[local_list.keys()[0]]['remote_uri'] = unicodise(destination_base)
+        else:
+            for key in local_list:
+                item = local_list[key]
+                remote_path = item['file_name'] if cfg.flatten else key
+                item['remote_uri'] = unicodise(destination_base + remote_path)
+                item['destination_base'] = destination_base
+
+    if cfg.dry_run:
+        for key in exclude_list:
+            output(u"exclude: %s" % unicodise(key))
+        for key in local_list:
+            uri1, uri2 = calc_upload_remote_uris(local_list[key])
+            output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri1))
+            output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri2))
+
+        warning(u"Exitting now because of --dry-run")
+        return
+
+    if cfg.parallel and len(local_list) > 1:
+        #Disabling progress metter for parallel downloads.
+        cfg.progress_meter = False
+        #Initialize Queue
+        global q
+        q = Queue.Queue()
+
+        seq = 0
+        for key in local_list:
+            seq += 1
+            q.put([local_list[key], seq, len(local_list), work_info])
+
+        for i in range(cfg.workers):
+            t = threading.Thread(target=upload_worker)
+            t.daemon = True
+            t.start()
+
+        #Necessary to ensure KeyboardInterrupt can actually kill
+        #Otherwise Queue.join() blocks until all queue elements have completed
+        while threading.activeCount() > 1:
+            time.sleep(.1)
+
+        q.join()
+    else:
+        seq = 0
+        for key in local_list:
+            seq += 1
+            do_upload_work(local_list[key], seq, len(local_list), work_info)
+
+
+def upload_worker():
+    while True:
+        try:
+            (item, seq, total, work_info) = q.get_nowait()
+        except Queue.Empty:
+            return
+        try:
+            do_upload_work(item, seq, total, work_info)
+        except Exception, e:
+            report_exception(e)
+            exit
+        q.task_done()
+
+
+def calc_upload_remote_uris(item):
+    sha1 = hash_file_sha1(item['full_name_unicode'])
+    #    destination_base = item['destination_base']
+    uri1 = u"sha1_%s.blob" % sha1
+    uri2 = u"sha1_%s.blob__%s" % (sha1, item['file_name_extension'])
+
+    #    uri1 = unicodise(destination_base + u"sha1_%s.blob" % sha1)
+    #    uri2 = unicodise(destination_base + u"sha1_%s.blob__%s" % (sha1, item['file_name_extension']))
+    #    item = local_list[key]
+    #    item['key'] = key
+    #    remote_path = item['file_name'] if cfg.flatten else item['key']
+    #    item['remote_uri'] = unicodise(destination_base + remote_path)
+    #    item['destination_base'] = destination_base
+
+    return uri1, uri2
+
+
+def do_upload_put(item, seq, total, work_info, uri):
+    remote_list = work_info['remote_list']
+    #    output()
+
+    #    remote_count = len(remote_list)
+
+    #    info(u"Summary: %d remote files already present, %s" % ( remote_count, remote_list.keys[0]))
+    #    for key in remote_list:
+    #        output('key: %s' % key)
+    #    for key, value in remote_list.items():
+    #        output('key: %s' % key)
+
+    destination_base = item['destination_base']
+    item['remote_uri'] = unicodise(destination_base + uri)
+    if remote_list.has_key(uri):
+        remote_file = remote_list[uri]
+        output(u"Skipped (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
+    else:
+        output(u"upload (%d): %s -> %s " % (seq, item['full_name_unicode'], item['remote_uri']))
+        if True:
+            do_put_work(item, seq, total)
+            #        output(u"DO THE upload (%d): %s (sha1_%s__%s) -> %s %s" % (seq, item['full_name_unicode'], sha1, item['file_name_extension'], item['remote_uri'], item['file_name_extension']))
+            #        time.sleep(5)
+
+
+
+def do_upload_deflate(item, seq, total, work_info, uri):
+    size = item['size']
+    filename = item['full_name_unicode']
+
+    if size <= CONST_sharef_size:
+        output(u"Skipped %s with size %d" % (filename, size))
+        return False
+
+
+    #Could require a --force too
+    with open(filename, 'w') as f:
+        f.write(uri)
+
+    return True
+
+
+
+def do_upload_work(item, seq, total, work_info):
+    cfg = Config()
+    s3 = S3(cfg)
+
+    uri1, uri2 = calc_upload_remote_uris(item)
+    do_upload_put(item, seq, total, work_info, uri1)
+    do_upload_put(item, seq, total, work_info, uri2)
+    if cfg.deflate:
+        do_upload_deflate(item, seq, total, work_info, uri1)
+
+
+
+CONST_sharef_size = 60 #A bit larger than... 40+4+5+2
+CONST_sharef_prefix='sha1'
+CONST_sharef_suffix='.blob'
+
+
+#==============================================================================================================================
+#=== cmd inflate
+#==============================================================================================================================
+
+def cmd_inflate(args):
+    if (len(args) < 2):
+        raise ParameterError("Too few parameters! Expected: %s" % commands['inflate']['param'])
+    if len(args) == 0:
+        raise ParameterError("Nothing to inflate. Expecting a local file or directory and a S3 URI destination.")
+
+    ## Normalize URI to convert s3://bkt to s3://bkt/ (trailing slash)
+    destination_base_uri = S3Uri(args.pop())
+    if destination_base_uri.type != 's3':
+        raise ParameterError("Source must currently be an S3Uri. Got: %s" % destination_base_uri)
+    destination_base = str(destination_base_uri)
+
+    local_list, single_file_local = fetch_local_list(args)
+
+    local_list, exclude_list = _filelist_filter_exclude_include(local_list)
+
+    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+
+    local_count = len(local_list)
+    remote_count = len(remote_list)
+
+    info(u"Summary: %d local files to fetch, %d remote files present" % (local_count, remote_count))
+
+    work_info = {
+        'remote_list': remote_list
+    }
+
+    if local_count > 0:
+        if not destination_base.endswith("/"):
+            if not single_file_local:
+                raise ParameterError(
+                    "Destination S3 URI must end with '/' (ie must refer to a directory on the remote side).")
+            local_list[local_list.keys()[0]]['remote_uri'] = unicodise(destination_base)
+        else:
+            for key in local_list:
+                item = local_list[key]
+                remote_path = item['file_name'] if cfg.flatten else key
+                item['remote_uri'] = unicodise(destination_base + remote_path)
+                item['destination_base'] = destination_base
+
+    if cfg.dry_run:
+        for key in exclude_list:
+            output(u"exclude: %s" % unicodise(key))
+        for key in local_list:
+            uri1, uri2 = calc_upload_remote_uris(local_list[key])
+            output(u"inflate: %s <- %s" % (local_list[key]['full_name_unicode'], uri1))
+            output(u"inflate: %s <- %s" % (local_list[key]['full_name_unicode'], uri2))
+
+        warning(u"Exitting now because of --dry-run")
+        return
+
+    if cfg.parallel and len(local_list) > 1:
+        #Disabling progress metter for parallel downloads.
+        cfg.progress_meter = False
+        #Initialize Queue
+        global q
+        q = Queue.Queue()
+
+        seq = 0
+        for key in local_list:
+            seq += 1
+            q.put([local_list[key], seq, len(local_list), work_info])
+
+        for i in range(cfg.workers):
+            t = threading.Thread(target=inflate_worker)
+            t.daemon = True
+            t.start()
+
+        #Necessary to ensure KeyboardInterrupt can actually kill
+        #Otherwise Queue.join() blocks until all queue elements have completed
+        while threading.activeCount() > 1:
+            time.sleep(.1)
+
+        q.join()
+    else:
+        seq = 0
+        for key in local_list:
+            seq += 1
+            do_inflate_work(local_list[key], seq, len(local_list), work_info)
+
+
+def inflate_worker():
+    while True:
+        try:
+            (item, seq, total, work_info) = q.get_nowait()
+        except Queue.Empty:
+            return
+        try:
+            do_inflate_work(item, seq, total, work_info)
+        except Exception, e:
+            report_exception(e)
+            exit
+        q.task_done()
+
+
+def calc_inflate_remote_uri(item):
+    size = item['size']
+    filename = item['full_name_unicode']
+
+    if size > CONST_sharef_size:
+        output(u"Skipped %s with size %d" % (filename, size))
+        return "", True
+
+
+    content = open(filename).read().strip(' \t\n\r')
+    m = re.search('^sha1_([0-9a-fA-F]+).blob$', content)
+
+    if m is None:
+        output(u"Skipped %s with content %s" % (filename, content))
+        return "", False
+
+    output(u"Blob-reference %s with content %s" % (filename, content))
+
+    return content, True
+
+
+def do_inflate_download(item, seq, total, work_info, uri):
+    remote_list = work_info['remote_list']
+    #    output()
+
+    #    remote_count = len(remote_list)
+
+    #    info(u"Summary: %d remote files already present, %s" % ( remote_count, remote_list.keys[0]))
+    #    for key in remote_list:
+    #        output('key: %s' % key)
+    #    for key, value in remote_list.items():
+    #        output('key: %s' % key)
+
+    destination_base = item['destination_base']
+
+    item['remote_uri'] = unicodise(destination_base + uri)
+    item['local_filename'] = item['full_name_unicode']
+    item['object_uri_str'] = item['remote_uri']
+    if remote_list.has_key(uri):
+        remote_file = remote_list[uri]
+        output(u"Inflating from S3 (%d) (%s): %s <- %s (%s) " % (seq, uri, item['local_filename'], item['object_uri_str'], remote_file['timestamp']))
+        if True:
+            do_get_work(item, seq, total)
+    else:
+        output(u"Unable to inflate (%d) (%s): %s <- %s " % (seq, uri, item['local_filename'], item['object_uri_str']))
+            #        output(u"DO THE upload (%d): %s (sha1_%s__%s) -> %s %s" % (seq, item['full_name_unicode'], sha1, item['file_name_extension'], item['remote_uri'], item['file_name_extension']))
+            #        time.sleep(5)
+
+
+def do_inflate_work(item, seq, total, work_info):
+    uri, should_inflate = calc_inflate_remote_uri(item)
+    if should_inflate:
+        local_inflate = False
+        if not local_inflate:
+            do_inflate_download(item, seq, total, work_info, uri)
+
+        #MLF:TODO:Should also have a local inflate location?
+
+
+#==============================================================================================================================
+#==============================================================================================================================
+#==============================================================================================================================
+
+
+
 def get_commands_list():
     return [
             {"cmd": "mb", "label": "Make bucket", "param": "s3://BUCKET", "func": cmd_bucket_create, "argc": 1},
             {"cmd": "rb", "label": "Remove bucket", "param": "s3://BUCKET", "func": cmd_bucket_delete, "argc": 1},
-            {"cmd": "ls", "label": "List objects or buckets", "param": "[s3://BUCKET[/PREFIX]]", "func": cmd_ls,
-             "argc": 0},
-            {"cmd": "la", "label": "List all object in all buckets", "param": "", "func": cmd_buckets_list_all_all,
-             "argc": 0},
-            {"cmd": "put", "label": "Put file into bucket", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]",
-             "func": cmd_object_put, "argc": 2},
-            {"cmd": "get", "label": "Get file from bucket", "param": "s3://BUCKET/OBJECT LOCAL_FILE",
-             "func": cmd_object_get, "argc": 1},
-            {"cmd": "del", "label": "Delete file from bucket", "param": "s3://BUCKET/OBJECT", "func": cmd_object_del,
-             "argc": 1},
+            {"cmd": "ls", "label": "List objects or buckets", "param": "[s3://BUCKET[/PREFIX]]", "func": cmd_ls, "argc": 0},
+            {"cmd": "la", "label": "List all object in all buckets", "param": "", "func": cmd_buckets_list_all_all, "argc": 0},
+            {"cmd": "put", "label": "Put file into bucket", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_object_put, "argc": 2},
+            {"cmd": "get", "label": "Get file from bucket", "param": "s3://BUCKET/OBJECT LOCAL_FILE", "func": cmd_object_get, "argc": 1},
+            {"cmd": "del", "label": "Delete file from bucket", "param": "s3://BUCKET/OBJECT", "func": cmd_object_del, "argc": 1},
         #{"cmd":"mkdir", "label":"Make a virtual S3 directory", "param":"s3://BUCKET/path/to/dir", "func":cmd_mkdir, "argc":1},
-            {"cmd": "sync", "label": "Synchronize a directory tree to S3",
-             "param": "LOCAL_DIR s3://BUCKET[/PREFIX] or s3://BUCKET[/PREFIX] LOCAL_DIR", "func": cmd_sync, "argc": 2},
-            {"cmd": "du", "label": "Disk usage by buckets", "param": "[s3://BUCKET[/PREFIX]]", "func": cmd_du,
-             "argc": 0},
-            {"cmd": "info", "label": "Get various information about Buckets or Files", "param": "s3://BUCKET[/OBJECT]",
-             "func": cmd_info, "argc": 1},
-            {"cmd": "cp", "label": "Copy object", "param": "s3://BUCKET1/OBJECT1 s3://BUCKET2[/OBJECT2]", "func": cmd_cp
-            , "argc": 2},
-            {"cmd": "mv", "label": "Move object", "param": "s3://BUCKET1/OBJECT1 s3://BUCKET2[/OBJECT2]", "func": cmd_mv
-            , "argc": 2},
-            {"cmd": "setacl", "label": "Modify Access control list for Bucket or Files", "param": "s3://BUCKET[/OBJECT]"
-            , "func": cmd_setacl, "argc": 1},
-            {"cmd": "accesslog", "label": "Enable/disable bucket access logging", "param": "s3://BUCKET",
-             "func": cmd_accesslog, "argc": 1},
-            {"cmd": "sign", "label": "Sign arbitrary string using the secret key", "param": "STRING-TO-SIGN",
-             "func": cmd_sign, "argc": 1},
-            {"cmd": "fixbucket", "label": "Fix invalid file names in a bucket", "param": "s3://BUCKET[/PREFIX]",
-             "func": cmd_fixbucket, "argc": 1},
+            {"cmd": "sync", "label": "Synchronize a directory tree to S3", "param": "LOCAL_DIR s3://BUCKET[/PREFIX] or s3://BUCKET[/PREFIX] LOCAL_DIR", "func": cmd_sync, "argc": 2},
+            {"cmd": "du", "label": "Disk usage by buckets", "param": "[s3://BUCKET[/PREFIX]]", "func": cmd_du, "argc": 0},
+            {"cmd": "info", "label": "Get various information about Buckets or Files", "param": "s3://BUCKET[/OBJECT]", "func": cmd_info, "argc": 1},
+            {"cmd": "cp", "label": "Copy object", "param": "s3://BUCKET1/OBJECT1 s3://BUCKET2[/OBJECT2]", "func": cmd_cp, "argc": 2},
+            {"cmd": "mv", "label": "Move object", "param": "s3://BUCKET1/OBJECT1 s3://BUCKET2[/OBJECT2]", "func": cmd_mv, "argc": 2},
+            {"cmd": "setacl", "label": "Modify Access control list for Bucket or Files", "param": "s3://BUCKET[/OBJECT]", "func": cmd_setacl, "argc": 1},
+            {"cmd": "accesslog", "label": "Enable/disable bucket access logging", "param": "s3://BUCKET", "func": cmd_accesslog, "argc": 1},
+            {"cmd": "sign", "label": "Sign arbitrary string using the secret key", "param": "STRING-TO-SIGN", "func": cmd_sign, "argc": 1},
+            {"cmd": "fixbucket", "label": "Fix invalid file names in a bucket", "param": "s3://BUCKET[/PREFIX]", "func": cmd_fixbucket, "argc": 1},
 
         ## CloudFront commands
             {"cmd": "cflist", "label": "List CloudFront distribution points", "param": "", "func": CfCmd.info,
@@ -1915,6 +2270,12 @@ def get_commands_list():
              "func": CfCmd.delete, "argc": 1},
             {"cmd": "cfmodify", "label": "Change CloudFront distribution point parameters", "param": "cf://DIST_ID",
              "func": CfCmd.modify, "argc": 1},
+
+        ## ContentAddressing commands
+            {"cmd": "upload", "label": "Push content", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_upload, "argc": 2},
+            {"cmd": "inflate", "label": "Mark's Amazing Command2", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_inflate, "argc": 2},
+
+
         ]
 
 
@@ -2010,6 +2371,10 @@ def main():
         help="Skip over files that exist at the destination (only for [get] and [sync] commands).")
     optparser.add_option("-r", "--recursive", dest="recursive", action="store_true",
         help="Recursive upload, download or removal.")
+    optparser.add_option("--flatten", dest="flatten", action="store_true",
+        help="Flatten a recursive operation (makes target name space flat even if source was recursive).")
+    optparser.add_option("--deflate", dest="deflate", action="store_true",
+        help="Stub files during an upload.")
     optparser.add_option("-P", "--acl-public", dest="acl_public", action="store_true",
         help="Store objects with ACL allowing read for anyone.")
     optparser.add_option("--acl-private", dest="acl_public", action="store_false",
@@ -2280,7 +2645,7 @@ def main():
         sys.exit(1)
 
     if len(args) < commands[command]["argc"]:
-        error(u"Not enough paramters for command '%s'" % command)
+        error(u"Not enough parameters for command '%s'" % command)
         sys.exit(1)
 
     try:

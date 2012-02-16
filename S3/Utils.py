@@ -243,6 +243,21 @@ def hash_file_md5(filename):
 
 __all__.append("hash_file_md5")
 
+def hash_file_sha1(filename):
+    h = sha1()
+    f = open(filename, "rb")
+    while True:
+        # Hash 32kB chunks
+        data = f.read(32 * 1024)
+        if not data:
+            break
+        h.update(data)
+    f.close()
+    return h.hexdigest()
+
+__all__.append("hash_file_sha1")
+
+
 def mkdir_with_parents(dir_name):
     """
      mkdir_with_parents(dst_dir)
@@ -288,6 +303,25 @@ def unicodise(string, encoding=None, errors="replace"):
         raise UnicodeDecodeError("Conversion to unicode failed: %r" % string)
 
 __all__.append("unicodise")
+
+def fooise(string, encoding=None, errors="replace"):
+    """
+     Convert 'string' to Unicode or raise an exception.
+     """
+
+    if not encoding:
+        encoding = Config.Config().encoding
+
+    if type(string) == unicode:
+        return string+"foo"
+    debug("Unicodising %r using %s" % (string, encoding))
+    try:
+        return string.decode(encoding, errors)+"foo"
+    except UnicodeDecodeError:
+        raise UnicodeDecodeError("Conversion to unicode failed: %r" % string)
+
+__all__.append("fooise")
+
 
 def deunicodise(string, encoding=None, errors="replace"):
     """
@@ -357,13 +391,13 @@ def check_bucket_name(bucket, dns_strict=True):
         if invalid:
             raise Exceptions.ParameterError(
                 "Bucket name '%s' contains disallowed character '%s'. The only supported ones are: lowercase us-ascii letters (a-z), digits (0-9), dot (.) and hyphen (-)." % (
-                bucket, invalid.groups()[0]))
+                    bucket, invalid.groups()[0]))
     else:
         invalid = re.search("([^A-Za-z0-9\._-])", bucket)
         if invalid:
             raise Exceptions.ParameterError(
                 "Bucket name '%s' contains disallowed character '%s'. The only supported ones are: us-ascii letters (a-z, A-Z), digits (0-9), dot (.), hyphen (-) and underscore (_)." % (
-                bucket, invalid.groups()[0]))
+                    bucket, invalid.groups()[0]))
 
     if len(bucket) < 3:
         raise Exceptions.ParameterError("Bucket name '%s' is too short (min 3 characters)" % bucket)

@@ -33,6 +33,8 @@ class Config(object):
     get_continue = False
     skip_existing = False
     recursive = False
+    flatten = False
+    deflate = False
     acl_public = None
     acl_grants = []
     acl_revokes = []
