@@ -2005,7 +2005,7 @@ def calc_upload_remote_uris(item):
     if size <= CONST_sharef_size:
         uri, is_sharef = calc_inflate_remote_uri(item)
         if is_sharef:
-            output(u"Skipped sharef file %s with size %d and sharef %s" % (filename, size, uri))
+            info(u"Skipped sharef file %s with size %d and sharef %s" % (filename, size, uri))
             return "", "", False
 
     sha1 = hash_file_sha1(item['full_name_unicode'])
@@ -2040,7 +2040,7 @@ def do_upload_put(item, seq, total, work_info, uri):
     item['remote_uri'] = unicodise(destination_base + uri)
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
-        output(u"Skipped (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
+        info(u"Skipped (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
     else:
         output(u"upload (%d): %s -> %s " % (seq, item['full_name_unicode'], item['remote_uri']))
         if True:
@@ -2055,7 +2055,7 @@ def do_upload_deflate(item, seq, total, work_info, uri):
     filename = item['full_name_unicode']
 
     if size <= CONST_sharef_size:
-        output(u"Skipped %s with size %d" % (filename, size))
+        info(u"Skipped %s with size %d" % (filename, size))
         return False
 
 
@@ -2189,7 +2189,7 @@ def calc_inflate_remote_uri(item):
     filename = item['full_name_unicode']
 
     if size > CONST_sharef_size:
-        output(u"Skipped %s with size %d" % (filename, size))
+        info(u"Skipped %s with size %d" % (filename, size))
         return "", False
 
 
@@ -2197,10 +2197,10 @@ def calc_inflate_remote_uri(item):
     m = re.search('^sha1_([0-9a-fA-F]+).blob$', content)
 
     if m is None:
-        output(u"Skipped %s with content %s" % (filename, content))
+        info(u"Skipped %s with content %s" % (filename, content))
         return "", False
 
-    output(u"Blob-reference %s with content %s" % (filename, content))
+#    output(u"Blob-reference %s with content %s" % (filename, content))
 
     return content, True
 
@@ -2244,6 +2244,120 @@ def do_inflate_work(item, seq, total, work_info):
 
 
 #==============================================================================================================================
+#=== cmd manifest
+#==============================================================================================================================
+
+def cmd_manifest(args):
+    if (len(args) < 2):
+        raise ParameterError("Too few parameters! Expected: %s" % commands['inflate']['param'])
+    if len(args) == 0:
+        raise ParameterError("Nothing to manifest. Expecting a local file or directory and a S3 URI for additional information.")
+
+    ## Normalize URI to convert s3://bkt to s3://bkt/ (trailing slash)
+    destination_base_uri = S3Uri(args.pop())
+    if destination_base_uri.type != 's3':
+        raise ParameterError("Source must currently be an S3Uri. Got: %s" % destination_base_uri)
+    destination_base = str(destination_base_uri)
+
+    local_list, single_file_local = fetch_local_list(args)
+
+    local_list, exclude_list = _filelist_filter_exclude_include(local_list)
+
+    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+
+    local_count = len(local_list)
+    remote_count = len(remote_list)
+
+    info(u"Summary: %d local files to fetch, %d remote files present" % (local_count, remote_count))
+
+    work_info = {
+        'remote_list': remote_list
+    }
+
+
+    if cfg.parallel and len(local_list) > 1:
+        #Disabling progress metter for parallel downloads.
+        cfg.progress_meter = False
+        #Initialize Queue
+        global q
+        q = Queue.Queue()
+
+        seq = 0
+        for key in local_list:
+            seq += 1
+            q.put([local_list[key], seq, len(local_list), work_info])
+
+        for i in range(cfg.workers):
+            t = threading.Thread(target=manifest_worker)
+            t.daemon = True
+            t.start()
+
+        #Necessary to ensure KeyboardInterrupt can actually kill
+        #Otherwise Queue.join() blocks until all queue elements have completed
+        while threading.activeCount() > 1:
+            time.sleep(.1)
+
+        q.join()
+    else:
+        seq = 0
+        for key in local_list:
+            seq += 1
+            do_manifest_work(local_list[key], seq, len(local_list), work_info)
+
+
+def manifest_worker():
+    while True:
+        try:
+            (item, seq, total, work_info) = q.get_nowait()
+        except Queue.Empty:
+            return
+        try:
+            do_manifest_work(item, seq, total, work_info)
+        except Exception, e:
+            report_exception(e)
+            exit
+        q.task_done()
+
+
+def calc_manifest_info(item, work_info):
+    size = item['size']
+    filename = item['full_name_unicode']
+
+    #MLF: Can handle everything locally
+    if size > CONST_sharef_size:
+        sha = hash_file_sha1(item['full_name_unicode'])
+        uri1 = u"sha1_%s.blob" % sha
+        uri2 = u"sha1_%s.blob__%s" % (sha, item['file_name_extension'])
+        return uri1, uri2, size, True
+
+    content = open(filename).read().strip(' \t\n\r')
+    m = re.search('^sha1_([0-9a-fA-F]+).blob$', content)
+
+    if m is None:
+        info(u"Skipped %s with content %s" % (filename, content))
+        return "", "", size, False
+
+    uri = content
+    uri1 = uri
+    uri2 =  u"%s__%s" % (uri1, item['file_name_extension'])
+    remote_list = work_info['remote_list']
+    if remote_list.has_key(uri):
+        remote_file = remote_list[uri]
+        size = remote_file['size']
+        return uri1, uri2, size, True
+    else:
+        info(u"Skipped %s with no remote file at %s" % (filename, uri))
+        return uri1, uri2, size, False
+
+
+def do_manifest_work(item, seq, total, work_info):
+    uri1, uri2, size, should_output = calc_manifest_info(item, work_info)
+    filename = item['full_name_unicode']
+
+    if should_output:
+        output(u"%s\t%s\t%s\t%s" % (filename, uri1, uri2, size))
+
+#==============================================================================================================================
 #==============================================================================================================================
 #==============================================================================================================================
 
@@ -2282,8 +2396,9 @@ def get_commands_list():
              "func": CfCmd.modify, "argc": 1},
 
         ## ContentAddressing commands
-            {"cmd": "upload", "label": "Push content", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_upload, "argc": 2},
-            {"cmd": "inflate", "label": "Mark's Amazing Command2", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_inflate, "argc": 2},
+            {"cmd": "upload", "label": "Upload file contents (and optionally --deflate the files)", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_upload, "argc": 2},
+            {"cmd": "inflate", "label": "Inflate any deflated files from the source", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_inflate, "argc": 2},
+            {"cmd": "manifest", "label": "Create a manifest of contents", "param": "FILE [FILE...] s3://BUCKET[/PREFIX]", "func": cmd_manifest, "argc": 2},
 
 
         ]
