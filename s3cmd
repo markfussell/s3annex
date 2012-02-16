@@ -855,7 +855,7 @@ def _get_filelist_local(local_uri):
     for root, dirs, files in filelist:
         rel_root = root.replace(local_path, local_base, 1)
         for f in files:
-            info(u"File %s (%s) -> '%s'" % (root, rel_root, f))
+#            info(u"File %s (%s) -> '%s'" % (root, rel_root, f))
             fileNamePrefix, fileExtension = os.path.splitext(f)
             full_name = os.path.join(root, f)
             if not os.path.isfile(full_name):
@@ -2180,7 +2180,7 @@ def calc_inflate_remote_uri(item):
 
     if size > CONST_sharef_size:
         output(u"Skipped %s with size %d" % (filename, size))
-        return "", True
+        return "", False
 
 
     content = open(filename).read().strip(' \t\n\r')
