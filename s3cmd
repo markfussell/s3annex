@@ -1999,6 +1999,15 @@ def upload_worker():
 
 
 def calc_upload_remote_uris(item):
+    size = item['size']
+    filename = item['full_name_unicode']
+
+    if size <= CONST_sharef_size:
+        uri, is_sharef = calc_inflate_remote_uri(item)
+        if is_sharef:
+            output(u"Skipped sharef file %s with size %d and sharef %s" % (filename, size, uri))
+            return "", "", False
+
     sha1 = hash_file_sha1(item['full_name_unicode'])
     #    destination_base = item['destination_base']
     uri1 = u"sha1_%s.blob" % sha1
@@ -2012,7 +2021,7 @@ def calc_upload_remote_uris(item):
     #    item['remote_uri'] = unicodise(destination_base + remote_path)
     #    item['destination_base'] = destination_base
 
-    return uri1, uri2
+    return uri1, uri2, True
 
 
 def do_upload_put(item, seq, total, work_info, uri):
@@ -2062,11 +2071,12 @@ def do_upload_work(item, seq, total, work_info):
     cfg = Config()
     s3 = S3(cfg)
 
-    uri1, uri2 = calc_upload_remote_uris(item)
-    do_upload_put(item, seq, total, work_info, uri1)
-    do_upload_put(item, seq, total, work_info, uri2)
-    if cfg.deflate:
-        do_upload_deflate(item, seq, total, work_info, uri1)
+    uri1, uri2, should_upload = calc_upload_remote_uris(item)
+    if should_upload:
+        do_upload_put(item, seq, total, work_info, uri1)
+        do_upload_put(item, seq, total, work_info, uri2)
+        if cfg.deflate:
+            do_upload_deflate(item, seq, total, work_info, uri1)
 
 
 
