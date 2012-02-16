@@ -23,6 +23,7 @@ import locale
 import subprocess
 import htmlentitydefs
 import hashlib
+import shutil
 
 import Queue
 import threading
@@ -1947,9 +1948,13 @@ def cmd_upload(args):
         for key in exclude_list:
             output(u"exclude: %s" % unicodise(key))
         for key in local_list:
-            uri1, uri2 = calc_upload_remote_uris(local_list[key])
-            output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri1))
-            output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri2))
+            uri1, uri2, should_upload = calc_upload_remote_uris(local_list[key])
+            if should_upload:
+                output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri1))
+                output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri2))
+            else:
+                output(u"skipped: %s -> %s" % (local_list[key]['full_name_unicode'], uri1))
+
 
         warning(u"Exitting now because of --dry-run")
         return
@@ -2006,7 +2011,7 @@ def calc_upload_remote_uris(item):
         uri, is_sharef = calc_inflate_remote_uri(item)
         if is_sharef:
             info(u"Skipped sharef file %s with size %d and sharef %s" % (filename, size, uri))
-            return "", "", False
+            return uri, "", False
 
     sha1 = hash_file_sha1(item['full_name_unicode'])
     #    destination_base = item['destination_base']
@@ -2073,6 +2078,11 @@ def do_upload_work(item, seq, total, work_info):
 
     uri1, uri2, should_upload = calc_upload_remote_uris(item)
     if should_upload:
+        if os.path.exists('.blobcache'):
+            local_filename = os.path.join('.blobcache',uri1)
+            if not os.path.exists(local_filename):
+                shutil.copyfile(item['full_name_unicode'],local_filename)
+
         do_upload_put(item, seq, total, work_info, uri1)
         do_upload_put(item, seq, total, work_info, uri2)
         if cfg.deflate:
@@ -2236,9 +2246,16 @@ def do_inflate_download(item, seq, total, work_info, uri):
 def do_inflate_work(item, seq, total, work_info):
     uri, should_inflate = calc_inflate_remote_uri(item)
     if should_inflate:
-        local_inflate = False
-        if not local_inflate:
+        local_filename = os.path.join('.blobcache',uri)
+        #local_filename.split("/"))
+        if os.path.exists(local_filename):
+            output(u"Inflating from local (%d) (%s): %s <- %s " % (seq, uri, item['full_name_unicode'], local_filename))
+            shutil.copyfile(local_filename, item['full_name_unicode'])
+        else:
             do_inflate_download(item, seq, total, work_info, uri)
+            if os.path.exists('.blobcache'):
+                shutil.copyfile(item['full_name_unicode'], local_filename)
+
 
         #MLF:TODO:Should also have a local inflate location?
 
