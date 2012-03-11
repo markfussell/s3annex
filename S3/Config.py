@@ -82,6 +82,7 @@ class Config(object):
     select_dir = False
     max_retries = 5
     retry_delay = 3
+    can_link = True
 
     ## Creating a singleton
     def __new__(self, configfile=None):
