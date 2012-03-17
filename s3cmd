@@ -856,7 +856,7 @@ def _get_filelist_local(local_uri):
     for root, dirs, files in filelist:
         rel_root = root.replace(local_path, local_base, 1)
         for f in files:
-#            info(u"File %s (%s) -> '%s'" % (root, rel_root, f))
+        #            info(u"File %s (%s) -> '%s'" % (root, rel_root, f))
             fileNamePrefix, fileExtension = os.path.splitext(f)
             full_name = os.path.join(root, f)
             if not os.path.isfile(full_name):
@@ -1906,7 +1906,13 @@ def cmd_upload(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-    remote_list = [] if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = {}
+
+    if cfg.use_directory:
+        remote_list = parse_directory_file(destination_base_uri)
+
+    if len(remote_list) < 1:
+        remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
 
     local_count = len(local_list)
     remote_count = len(remote_list)
@@ -1947,7 +1953,6 @@ def cmd_upload(args):
                 output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri2))
             else:
                 output(u"skipped: %s -> %s" % (local_list[key]['full_name_unicode'], uri1))
-
 
         warning(u"Exitting now because of --dry-run")
         return
@@ -2035,17 +2040,20 @@ def do_upload_put(item, seq, total, work_info, uri):
     #        output('key: %s' % key)
 
     destination_base = item['destination_base']
-    item['remote_uri'] = unicodise(destination_base + uri)
+    full_uri = unicodise(destination_base + uri)
+    item['remote_uri'] = full_uri
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
-        info(u"Skipped (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
+        info(u"Skipped    (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
+    elif remote_list.has_key(full_uri):
+        remote_file = remote_list[full_uri]
+        info(u"Skipped[2] (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
     else:
-        info(u"upload (%d): %s -> %s " % (seq, item['full_name_unicode'], item['remote_uri']))
+        info(u"Upload     (%d): %s -> %s " % (seq, item['full_name_unicode'], item['remote_uri']))
         if True:
             do_put_work(item, seq, total)
             #        output(u"DO THE upload (%d): %s (sha1_%s__%s) -> %s %s" % (seq, item['full_name_unicode'], sha1, item['file_name_extension'], item['remote_uri'], item['file_name_extension']))
             #        time.sleep(5)
-
 
 
 def do_upload_deflate(item, seq, total, work_info, uri):
@@ -2065,6 +2073,7 @@ def do_upload_deflate(item, seq, total, work_info, uri):
         f.write(uri)
 
     return True
+
 
 def do_copy_deflate_into(item, seq, total, work_info, uri, destfilename):
     dir = os.path.dirname(destfilename)
@@ -2090,8 +2099,6 @@ def do_copy_deflate_into(item, seq, total, work_info, uri, destfilename):
     return True
 
 
-
-
 def do_upload_work(item, seq, total, work_info):
     cfg = Config()
     s3 = S3(cfg)
@@ -2099,17 +2106,17 @@ def do_upload_work(item, seq, total, work_info):
     uri1, uri2, should_upload = calc_upload_remote_uris(item)
     if should_upload:
         if os.path.exists('.blobcache'):
-            local_filename = os.path.join('.blobcache',uri1)
+            local_filename = os.path.join('.blobcache', uri1)
             if not os.path.exists(local_filename):
                 if cfg.can_link:
                     try:
                         os.remove(local_filename)
-                        os.link(item['full_name_unicode'],local_filename)
+                        os.link(item['full_name_unicode'], local_filename)
                     except OSError, e:
                         cfg.can_link = False
-                        shutil.copyfile(item['full_name_unicode'],local_filename)
+                        shutil.copyfile(item['full_name_unicode'], local_filename)
                 else:
-                    shutil.copyfile(item['full_name_unicode'],local_filename)
+                    shutil.copyfile(item['full_name_unicode'], local_filename)
 
         do_upload_put(item, seq, total, work_info, uri1)
         do_upload_put(item, seq, total, work_info, uri2)
@@ -2117,10 +2124,9 @@ def do_upload_work(item, seq, total, work_info):
             do_upload_deflate(item, seq, total, work_info, uri1)
 
 
-
 CONST_sharef_size = 60 #A bit larger than... 40+4+5+2
-CONST_sharef_prefix='sha1'
-CONST_sharef_suffix='.blob'
+CONST_sharef_prefix = 'sha1'
+CONST_sharef_suffix = '.blob'
 
 
 #==============================================================================================================================
@@ -2143,7 +2149,13 @@ def cmd_inflate(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-    remote_list = [] if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = {}
+
+    if cfg.use_directory:
+        remote_list = parse_directory_file(destination_base_uri)
+
+    if len(remote_list) < 1:
+        remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
 
     local_count = len(local_list)
     remote_count = len(remote_list)
@@ -2153,7 +2165,7 @@ def cmd_inflate(args):
     work_info = {
         'remote_list': remote_list,
         'destination_base': destination_base,
-    }
+        }
 
     if local_count > 0:
         if not destination_base.endswith("/"):
@@ -2231,7 +2243,6 @@ def calc_inflate_remote_uri(item):
         info(u"Skipped %s with size %d" % (filename, size))
         return "", False
 
-
     content = open(filename).read().strip(' \t\n\r')
     m = re.search('^sha1_([0-9a-fA-F]+).blob$', content)
 
@@ -2239,7 +2250,7 @@ def calc_inflate_remote_uri(item):
         info(u"Skipped %s with content %s" % (filename, content))
         return "", False
 
-#    output(u"Blob-reference %s with content %s" % (filename, content))
+    #    output(u"Blob-reference %s with content %s" % (filename, content))
 
     return content, True
 
@@ -2258,29 +2269,36 @@ def do_inflate_download(item, seq, total, work_info, uri):
 
     destination_base = item['destination_base']
 
-    item['remote_uri'] = unicodise(destination_base + uri)
+    full_uri = unicodise(destination_base + uri)
+    item['remote_uri'] = full_uri
     item['local_filename'] = item['full_name_unicode']
     item['object_uri_str'] = item['remote_uri']
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
-        info(u"Inflating from S3 (%d) (%s): %s <- %s (%s) " % (seq, uri, item['local_filename'], item['object_uri_str'], remote_file['timestamp']))
+        info(u"Inflating[1] from S3 (%d) (%s): %s <- %s (%s) " % (seq, uri, item['local_filename'], item['object_uri_str'], remote_file['timestamp']))
+        if True:
+            do_get_work(item, seq, total)
+        return True
+    elif remote_list.has_key(full_uri):
+        remote_file = remote_list[full_uri]
+        info(u"Inflating[2] from S3 (%d) (%s): %s <- %s (%s) " % (seq, uri, item['local_filename'], item['object_uri_str'], remote_file['timestamp']))
         if True:
             do_get_work(item, seq, total)
         return True
     else:
         error(u"Unable to inflate (%d) (%s): %s <- %s " % (seq, uri, item['local_filename'], item['object_uri_str']))
         return False
-            #        output(u"DO THE upload (%d): %s (sha1_%s__%s) -> %s %s" % (seq, item['full_name_unicode'], sha1, item['file_name_extension'], item['remote_uri'], item['file_name_extension']))
-            #        time.sleep(5)
+        #        output(u"DO THE upload (%d): %s (sha1_%s__%s) -> %s %s" % (seq, item['full_name_unicode'], sha1, item['file_name_extension'], item['remote_uri'], item['file_name_extension']))
+        #        time.sleep(5)
 
 
 def do_inflate_work(item, seq, total, work_info):
     uri, should_inflate = calc_inflate_remote_uri(item)
     if should_inflate:
-        local_filename = os.path.join('.blobcache',uri)
+        local_filename = os.path.join('.blobcache', uri)
         #local_filename.split("/"))
         if os.path.exists(local_filename):
-            info(u"Inflating from local (%d) (%s): %s <- %s (%s)" % (seq, uri, item['full_name_unicode'], local_filename, ("Link" if cfg.can_link else "Copy")) )
+            info(u"Inflating from local (%d) (%s): %s <- %s (%s)" % (seq, uri, item['full_name_unicode'], local_filename, ("Link" if cfg.can_link else "Copy")))
             if cfg.can_link:
                 try:
                     os.remove(item['full_name_unicode'])
@@ -2305,7 +2323,7 @@ def do_inflate_work(item, seq, total, work_info):
                         shutil.copyfile(item['full_name_unicode'], local_filename)
 
 
-        #MLF:TODO:Should also have a local inflate location?
+                        #MLF:TODO:Should also have a local inflate location?
 
 
 #==============================================================================================================================
@@ -2330,8 +2348,13 @@ def cmd_copydeflate(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-    remote_list = {} if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = {}
 
+    if cfg.use_directory:
+        remote_list = parse_directory_file(destination_base_uri)
+
+    if len(remote_list) < 1:
+        remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
 
     local_count = len(local_list)
     remote_count = len(remote_list)
@@ -2341,8 +2364,8 @@ def cmd_copydeflate(args):
     work_info = {
         'remote_list': remote_list,
         'local_destination': local_destination,
-        'destination_base' : destination_base,
-    }
+        'destination_base': destination_base,
+        }
 
 
 
@@ -2381,7 +2404,6 @@ def cmd_copydeflate(args):
                 output(u"upload: %s -> %s" % (local_list[key]['full_name_unicode'], uri2))
             else:
                 output(u"skipped: %s -> %s" % (local_list[key]['full_name_unicode'], uri1))
-
 
         warning(u"Exitting now because of --dry-run")
         return
@@ -2446,10 +2468,6 @@ def cmd_copydeflate(args):
             do_copydeflate_work2(exclude_list[key], seq, len(exclude_list), work_info)
 
 
-
-
-
-
 def copydeflate_worker():
     while True:
         try:
@@ -2478,7 +2496,6 @@ def copydeflate_worker2():
         q.task_done()
 
 
-
 def do_linkorcopy_from_to(source_filename, dest_filename):
     dir = os.path.dirname(dest_filename)
     if not os.path.exists(dir):
@@ -2486,12 +2503,12 @@ def do_linkorcopy_from_to(source_filename, dest_filename):
     if cfg.can_link:
         try:
             os.remove(dest_filename)
-            os.link(source_filename,dest_filename)
+            os.link(source_filename, dest_filename)
         except OSError, e:
             cfg.can_link = False
-            shutil.copyfile(source_filename,dest_filename)
+            shutil.copyfile(source_filename, dest_filename)
     else:
-        shutil.copyfile(source_filename,dest_filename)
+        shutil.copyfile(source_filename, dest_filename)
 
 
 def do_copy_from_to(source_filename, dest_filename):
@@ -2499,8 +2516,7 @@ def do_copy_from_to(source_filename, dest_filename):
     if not os.path.exists(dir):
         os.makedirs(dir)
 
-    shutil.copyfile(source_filename,dest_filename)
-
+    shutil.copyfile(source_filename, dest_filename)
 
 
 def do_copydeflate_work(item, seq, total, work_info):
@@ -2510,9 +2526,9 @@ def do_copydeflate_work(item, seq, total, work_info):
     uri1, uri2, should_upload = calc_upload_remote_uris(item)
     if should_upload:
         if os.path.exists('.blobcache'):
-            local_filename = os.path.join('.blobcache',uri1)
+            local_filename = os.path.join('.blobcache', uri1)
             if not os.path.exists(local_filename):
-                do_copy_from_to(item['full_name_unicode'],local_filename)
+                do_copy_from_to(item['full_name_unicode'], local_filename)
 
         do_upload_put(item, seq, total, work_info, uri1)
         do_upload_put(item, seq, total, work_info, uri2)
@@ -2521,7 +2537,7 @@ def do_copydeflate_work(item, seq, total, work_info):
         source_filename = item['full_name_unicode']
         dest_filename = os.path.join(work_info['local_destination'], item['key'])
         info(u"Deflate copy (%s): %s to %s key: %s => %s" % (seq, source_filename, work_info['local_destination'], item['key'], dest_filename))
-#        info(u"Deflate copy: '%s' to '%s' ", (item['full_name_unicode'], work_info['local_destination']))
+        #        info(u"Deflate copy: '%s' to '%s' ", (item['full_name_unicode'], work_info['local_destination']))
         do_copy_deflate_into(item, seq, total, work_info, uri1, dest_filename)
 
     else:
@@ -2552,6 +2568,44 @@ def do_copydeflate_work2(item, seq, total, work_info):
 #=== cmd manifest
 #==============================================================================================================================
 
+
+
+
+def parse_directory_file(destination_base_uri):
+    blob_directory_file = cfg.blob_directory
+    local_filename = blob_directory_file #os.path.join('.blobcache', blob_directory_file)
+
+    remote_list = SortedDict(ignore_case=False)
+
+#    if not os.path.exists(local_filename):
+#    #Check for the file up on the server
+#        item = {
+#            'object_uri_str': destination_base_uri + blob_directory_file,
+#            'local_filename': local_filename,
+#            }
+#        do_get_work(item, 1, 1)
+#
+    info(u"Trying Directory File: '%s'" % (local_filename))
+
+    if os.path.exists(local_filename):
+        info(u"Found Directory File: '%s'" % (local_filename))
+
+        for line in open(local_filename, 'r'):
+            day, time, size, name = line.split()
+#            info(u"%s, %s, size=%s, name=%s" % (day,time,size,name))
+
+            remote_item = {
+                'key' : name,
+                'base_uri': destination_base_uri,
+                'object_uri_str': unicode(name),
+                'size': size,
+                }
+
+            remote_list[name] = remote_item
+
+    return remote_list
+
+
 def cmd_manifest(args):
     if (len(args) < 2):
         raise ParameterError("Too few parameters! Expected: %s" % commands['inflate']['param'])
@@ -2568,14 +2622,21 @@ def cmd_manifest(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-#    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
-    remote_list = {} if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = {}
+
+    if cfg.use_directory:
+        remote_list = parse_directory_file(destination_base_uri)
+
+    if len(remote_list) < 1:
+        remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+
+    #    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    #    remote_list = {} if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
 
     local_count = len(local_list)
     remote_count = len(remote_list)
 
     info(u"Summary: %d local files to fetch, %d remote files present" % (local_count, remote_count))
-
 
     if local_count > 0:
         if not destination_base.endswith("/"):
@@ -2590,14 +2651,12 @@ def cmd_manifest(args):
                 item['remote_uri'] = unicodise(destination_base + remote_path)
                 item['destination_base'] = destination_base
 
-
     s3 = S3(Config())
     work_info = {
         'remote_list': remote_list,
         'destination_base': destination_base,
         's3': s3,
-    }
-
+        }
 
     if cfg.parallel and len(local_list) > 1:
         #Disabling progress metter for parallel downloads.
@@ -2644,7 +2703,6 @@ def manifest_worker():
 
 
 def calc_manifest_info(item, work_info):
-
     size = item['size']
     filename = item['full_name_unicode']
 
@@ -2664,24 +2722,31 @@ def calc_manifest_info(item, work_info):
 
     uri = content
     uri1 = uri
-    uri2 =  u"%s__%s" % (uri1, item['file_name_extension'])
-
+    uri2 = u"%s__%s" % (uri1, item['file_name_extension'])
 
     remote_list = work_info['remote_list']
+
+    #MLF:Temporarily can be either full or suffix key
+    full_uri = item['destination_base'] + uri
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
         size = remote_file['size']
         return uri1, uri2, size, True
+    elif remote_list.has_key(full_uri):
+        remote_file = remote_list[full_uri]
+        size = remote_file['size']
+        return uri1, uri2, size, True
     else:
-#        info(u"Fetching %s for %s" % (item['remote_uri'], filename))
+    #        info(u"Fetching %s for %s" % (item['remote_uri'], filename))
         #Maybe we just didn't preget the list... so get it now
+        warning(u"File is not in directory_listing: '%s' , remote file at '%s'" % (filename, uri))
         try:
-            remote_uri = S3Uri(item['destination_base']+uri)
+            remote_uri = S3Uri(full_uri)
             item_list = _get_filelist_remote(remote_uri, False)
-#            item_info = work_info['s3'].object_info(remote_uri)
+            #            item_info = work_info['s3'].object_info(remote_uri)
             if len(item_list) > 0:
                 item_info = item_list[item_list.keys()[0]]
-#                info(u"Received %s for %s" % (item['remote_uri'], filename))
+                #                info(u"Received %s for %s" % (item['remote_uri'], filename))
                 size = item_info['size']
                 return uri1, uri2, size, True
             else:
@@ -2692,15 +2757,12 @@ def calc_manifest_info(item, work_info):
             return uri1, uri2, size, False
 
 
-
-
 def do_manifest_work(item, seq, total, work_info):
     uri1, uri2, size, should_output = calc_manifest_info(item, work_info)
     filename = item['full_name_unicode']
 
     if should_output:
         output(u"%s\t%s\t%s\t%s" % (filename, uri1, uri2, size))
-
 
 
 #==============================================================================================================================
@@ -2730,7 +2792,6 @@ def cmd_cleanup(args):
     work_info = {
         'remote_list': remote_list
     }
-
 
     if cfg.parallel and len(remote_list) > 1:
         #Disabling progress metter for parallel downloads.
@@ -2796,8 +2857,9 @@ def calc_cleanup_info(item, work_info):
 
     uri = content
     uri1 = uri
-    uri2 =  u"%s__%s" % (uri1, item['file_name_extension'])
+    uri2 = u"%s__%s" % (uri1, item['file_name_extension'])
     remote_list = work_info['remote_list']
+#    full_uri =
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
         size = remote_file['size']
@@ -2810,7 +2872,7 @@ def calc_cleanup_info(item, work_info):
 def do_cleanup_work(item, seq, total, work_info):
     size = item['size']
     should_output = size <= CONST_sharef_size
-#    uri1, uri2, size, should_output = calc_manifest_info(item, work_info)
+    #    uri1, uri2, size, should_output = calc_manifest_info(item, work_info)
 
     if should_output:
         filename = item['base_uri']
@@ -2959,8 +3021,14 @@ def main():
         help="Recursive upload, download or removal.")
     optparser.add_option("--flatten", dest="flatten", action="store_true",
         help="Flatten a recursive operation (makes target name space flat even if source was recursive).")
+
     optparser.add_option("--deflate", dest="deflate", action="store_true",
         help="Stub files during an upload.")
+    optparser.add_option("--use-directory", dest="use_directory", action="store_true",
+        help="Read from a directory-file (named 'blob_directory.txt' unless overridden below)")
+    optparser.add_option("--directory-name", dest="blob_directory", #action="append", metavar="FILE",
+        help="Set the directory-file's name to FILE")
+
     optparser.add_option("-P", "--acl-public", dest="acl_public", action="store_true",
         help="Store objects with ACL allowing read for anyone.")
     optparser.add_option("--acl-private", dest="acl_public", action="store_false",

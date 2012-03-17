@@ -34,7 +34,11 @@ class Config(object):
     skip_existing = False
     recursive = False
     flatten = False
+
     deflate = False
+    use_directory = False
+    blob_directory = 'blob_directory.txt'
+
     acl_public = None
     acl_grants = []
     acl_revokes = []
