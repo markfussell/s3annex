@@ -1919,6 +1919,10 @@ def cmd_upload(args):
 
     info(u"Summary: %d local files to upload, %d remote files already present" % (local_count, remote_count))
 
+    work_info = {
+        'remote_list': remote_list
+    }
+
     #    if local_count > 0:
     #        if not destination_base.endswith("/"):
     #            if not single_file_local:
