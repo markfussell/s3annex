@@ -1906,19 +1906,12 @@ def cmd_upload(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = [] if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
 
     local_count = len(local_list)
     remote_count = len(remote_list)
 
     info(u"Summary: %d local files to upload, %d remote files already present" % (local_count, remote_count))
-
-    work_info = {
-        'remote_list': remote_list
-    }
-
-
-
 
     #    if local_count > 0:
     #        if not destination_base.endswith("/"):
@@ -2150,7 +2143,7 @@ def cmd_inflate(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = [] if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
 
     local_count = len(local_list)
     remote_count = len(remote_list)
@@ -2158,7 +2151,8 @@ def cmd_inflate(args):
     info(u"Summary: %d local files to fetch, %d remote files present" % (local_count, remote_count))
 
     work_info = {
-        'remote_list': remote_list
+        'remote_list': remote_list,
+        'destination_base': destination_base,
     }
 
     if local_count > 0:
@@ -2336,7 +2330,8 @@ def cmd_copydeflate(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = {} if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+
 
     local_count = len(local_list)
     remote_count = len(remote_list)
@@ -2345,7 +2340,8 @@ def cmd_copydeflate(args):
 
     work_info = {
         'remote_list': remote_list,
-        'local_destination': local_destination
+        'local_destination': local_destination,
+        'destination_base' : destination_base,
     }
 
 
@@ -2572,15 +2568,34 @@ def cmd_manifest(args):
 
     local_list, exclude_list = _filelist_filter_exclude_include(local_list)
 
-    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+#    remote_list = fetch_remote_list(destination_base, recursive=True, require_attribs=True)
+    remote_list = {} if cfg.parallel else fetch_remote_list(destination_base, recursive=True, require_attribs=True)
 
     local_count = len(local_list)
     remote_count = len(remote_list)
 
     info(u"Summary: %d local files to fetch, %d remote files present" % (local_count, remote_count))
 
+
+    if local_count > 0:
+        if not destination_base.endswith("/"):
+            if not single_file_local:
+                raise ParameterError(
+                    "Destination S3 URI must end with '/' (ie must refer to a directory on the remote side).")
+            local_list[local_list.keys()[0]]['remote_uri'] = unicodise(destination_base)
+        else:
+            for key in local_list:
+                item = local_list[key]
+                remote_path = item['file_name'] if cfg.flatten else key
+                item['remote_uri'] = unicodise(destination_base + remote_path)
+                item['destination_base'] = destination_base
+
+
+    s3 = S3(Config())
     work_info = {
-        'remote_list': remote_list
+        'remote_list': remote_list,
+        'destination_base': destination_base,
+        's3': s3,
     }
 
 
@@ -2629,6 +2644,7 @@ def manifest_worker():
 
 
 def calc_manifest_info(item, work_info):
+
     size = item['size']
     filename = item['full_name_unicode']
 
@@ -2649,14 +2665,33 @@ def calc_manifest_info(item, work_info):
     uri = content
     uri1 = uri
     uri2 =  u"%s__%s" % (uri1, item['file_name_extension'])
+
+
     remote_list = work_info['remote_list']
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
         size = remote_file['size']
         return uri1, uri2, size, True
     else:
-        info(u"Skipped %s with no remote file at %s" % (filename, uri))
-        return uri1, uri2, size, False
+#        info(u"Fetching %s for %s" % (item['remote_uri'], filename))
+        #Maybe we just didn't preget the list... so get it now
+        try:
+            remote_uri = S3Uri(item['destination_base']+uri)
+            item_list = _get_filelist_remote(remote_uri, False)
+#            item_info = work_info['s3'].object_info(remote_uri)
+            if len(item_list) > 0:
+                item_info = item_list[item_list.keys()[0]]
+#                info(u"Received %s for %s" % (item['remote_uri'], filename))
+                size = item_info['size']
+                return uri1, uri2, size, True
+            else:
+                warning(u"Skipped %s with no remote file at %s" % (filename, uri))
+                return uri1, uri2, size, False
+        except S3Error, e:
+            warning(u"Skipped %s with no remote file at %s" % (filename, uri))
+            return uri1, uri2, size, False
+
+
 
 
 def do_manifest_work(item, seq, total, work_info):
