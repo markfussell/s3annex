@@ -2048,10 +2048,10 @@ def do_upload_put(item, seq, total, work_info, uri):
     item['remote_uri'] = full_uri
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
-        info(u"Skipped    (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
+        info(u"Skipped    (%d) (%s): %s -> %s " % (seq, uri, item['full_name_unicode'], item['remote_uri'])) #, remote_file['timestamp']))
     elif remote_list.has_key(full_uri):
         remote_file = remote_list[full_uri]
-        info(u"Skipped[2] (%d) (%s): %s -> %s (%s) " % (seq, uri, item['full_name_unicode'], item['remote_uri'], remote_file['timestamp']))
+        info(u"Skipped[2] (%d) (%s): %s -> %s " % (seq, uri, item['full_name_unicode'], item['remote_uri'])) #, remote_file['timestamp']))
     else:
         info(u"Upload     (%d): %s -> %s " % (seq, item['full_name_unicode'], item['remote_uri']))
         if True:
@@ -2279,13 +2279,13 @@ def do_inflate_download(item, seq, total, work_info, uri):
     item['object_uri_str'] = item['remote_uri']
     if remote_list.has_key(uri):
         remote_file = remote_list[uri]
-        info(u"Inflating[1] from S3 (%d) (%s): %s <- %s (%s) " % (seq, uri, item['local_filename'], item['object_uri_str'], remote_file['timestamp']))
+        info(u"Inflating[1] from S3 (%d) (%s): %s <- %s " % (seq, uri, item['local_filename'], item['object_uri_str'])) #, remote_file['timestamp']))
         if True:
             do_get_work(item, seq, total)
         return True
     elif remote_list.has_key(full_uri):
         remote_file = remote_list[full_uri]
-        info(u"Inflating[2] from S3 (%d) (%s): %s <- %s (%s) " % (seq, uri, item['local_filename'], item['object_uri_str'], remote_file['timestamp']))
+        info(u"Inflating[2] from S3 (%d) (%s): %s <- %s " % (seq, uri, item['local_filename'], item['object_uri_str'])) #, remote_file['timestamp']))
         if True:
             do_get_work(item, seq, total)
         return True
