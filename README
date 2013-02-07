@@ -1,3 +1,12 @@
+S3annex (an augmented S3Cmd)
+=================================================
+
+See: 
+    http://markfussell.emenar.com/blog/2013/01/13/git-about-everything-annex/
+for details.
+
+Original notes are below.
+
 S3cmd tool for Amazon Simple Storage Service (S3)
 =================================================
 
